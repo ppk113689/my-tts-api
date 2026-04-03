@@ -1,53 +1,66 @@
-from flask import Flask, request, send_file, jsonify
-import requests
-import base64
 import os
+import asyncio
+import edge_tts
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)
+CORS(app) # Website ကနေ လှမ်းခေါ်လို့ရအောင် CORS ခွင့်ပြုခြင်း
 
-def generate_srt(text, duration_sec=5):
-    # အခြေခံ SRT format တည်ဆောက်ခြင်း
-    srt_content = f"1\n00:00:01,000 --> 00:00:0{duration_sec},000\n{text}\n"
-    with open("output.srt", "w", encoding="utf-8") as f:
-        f.write(srt_content)
-    return "output.srt"
+# ဖိုင်တွေ သိမ်းမယ့်နေရာ
+UPLOAD_FOLDER = 'static'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+@app.route('/')
+def home():
+    return "Myanmar TTS API is running!"
 
 @app.route('/generate', methods=['POST'])
 def generate():
-    data = request.json
-    text = data.get('text', '')
-    voice = data.get('voice', 'my_male_c9') # မြန်မာ ယောင်္ကျားသံ
-
-    # TikTok TTS API လှမ်းခေါ်ခြင်း
-    tts_url = "https://tiktok-tts.weilbyte.dev/api/generate"
-    response = requests.post(tts_url, json={"text": text, "voice": voice})
-
-    if response.status_code == 200:
-        audio_data = response.json()['data']
-        
-        # MP3 သိမ်းခြင်း
-        with open("output.mp3", "wb") as f:
-            f.write(base64.b64decode(audio_data))
-        
-        # SRT သိမ်းခြင်း
-        generate_srt(text)
-
-        return jsonify({
-            "status": "success",
-            "audio_url": "/download/mp3",
-            "srt_url": "/download/srt"
-        })
+    data = request.get_json()
+    text = data.get('text')
+    voice = data.get('voice', 'my-MM-ZawZawNeural') # Default ယောက်ျားလေးအသံ
+    speed = data.get('speed', '20')
+    pitch = data.get('pitch', '5')
     
-    return jsonify({"status": "error"}), 500
+    # Speed နဲ့ Pitch ကို Edge-TTS format ပြောင်းခြင်း
+    # Speed: +20% သို့မဟုတ် -10%
+    rate = f"+{speed}%" if int(speed) >= 0 else f"{speed}%"
+    ptch = f"+{pitch}Hz" if int(pitch) >= 0 else f"{pitch}Hz"
 
-@app.route('/download/<type>')
-def download(type):
-    if type == "mp3":
-        return send_file("output.mp3", as_attachment=True)
-    elif type == "srt":
-        return send_file("output.srt", as_attachment=True)
+    file_id = "output"
+    audio_path = os.path.join(UPLOAD_FOLDER, f"{file_id}.mp3")
+    srt_path = os.path.join(UPLOAD_FOLDER, f"{file_id}.srt")
 
-if __name__ == '__main__':
-    app.run(debug=True)
+    # အသံထုတ်ခြင်း
+    async def amain():
+        communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=ptch)
+        subs = edge_tts.SubMaker()
+        with open(audio_path, "wb") as fp:
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    fp.write(chunk["data"])
+                elif chunk["type"] == "WordBoundary":
+                    subs.feed(chunk)
+        
+        # SRT ဖိုင်သိမ်းခြင်း
+        with open(srt_path, "w", encoding="utf-8") as f:
+            f.write(subs.generate_subs())
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(amain())
+
+    return jsonify({
+        "status": "success",
+        "audio_url": f"/static/{file_id}.mp3",
+        "srt_url": f"/static/{file_id}.srt"
+    })
+
+@app.route('/static/<path:filename>')
+def download_file(filename):
+    return send_from_directory(UPLOAD_FOLDER, filename)
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
