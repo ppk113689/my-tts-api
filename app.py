@@ -35,7 +35,7 @@ def generate():
 
     # အသံထုတ်ခြင်း
     async def amain():
-        communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=ptch)
+        communicate = edge_tts.Communicate(text, voice)
         subs = edge_tts.SubMaker()
         with open(audio_path, "wb") as fp:
             async for chunk in communicate.stream():
